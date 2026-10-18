@@ -18,6 +18,7 @@ import { z } from 'zod';
 // 在 MCP 里拦会连「安全拒绝理由」都拿不到，反而让模型无法把话说清楚。
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
+import { isSensitivePath, isPathApproved, createPermissionRequest } from './perm-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1274,6 +1275,16 @@ server.tool(
   async ({ path: p, maxChars }) => {
     try {
       const abs = resolveInWorkspace(p);
+      // 敏感文件必须管理员在 QQ 上明确授权（授权码 10 分钟有效）
+      if (isSensitivePath(abs) && !isPathApproved(abs)) {
+        return {
+          content: [{
+            type: 'text',
+            text: `该文件属于敏感文件，需要管理员授权。请先调用 request_permission(path="${abs}", reason="说明为什么要读")，管理员在 QQ 回复「同意 <授权码>」后，再用同一路径重试本工具。`
+          }],
+          isError: true
+        };
+      }
       const st = fs.statSync(abs);
       if (!st.isFile()) throw new Error(`不是普通文件：${abs}`);
       if (st.size > READ_LIMIT_BYTES) throw new Error(`文件过大（${st.size} 字节，上限 ${READ_LIMIT_BYTES}）`);
@@ -1312,6 +1323,35 @@ server.tool(
       return { content: [{ type: 'text', text: `目录: ${abs}\n` + serializeModelData(entries) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `列目录失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'request_permission',
+  '向管理员申请读取某个敏感文件的授权。会在 QQ 私聊里给管理员发一条带授权码的申请，管理员回复「同意 <授权码>」后即可读取。',
+  {
+    path: z.string().describe('要读取的文件路径（工作区内）'),
+    reason: z.string().describe('为什么要读这个文件，一句话说明')
+  },
+  async ({ path: p, reason }) => {
+    try {
+      const abs = resolveInWorkspace(p);
+      const owner = Number(getConfig()?.ownerQQ ?? 0);
+      if (!owner) throw new Error('config.json 里没有配置 ownerQQ，无法发送授权申请');
+      const rec = createPermissionRequest({ path: abs, reason: String(reason ?? '') });
+      await onebot('send_private_msg', {
+        user_id: owner,
+        message: [{
+          type: 'text',
+          data: {
+            text: `【授权申请 ${rec.code}】\n想读取：${abs}\n原因：${reason || '（未说明）'}\n\n回复「同意 ${rec.code}」或「拒绝 ${rec.code}」（10 分钟内有效）`
+          }
+        }]
+      });
+      return { content: [{ type: 'text', text: `已向管理员（${owner}）发送授权申请 ${rec.code}。等管理员回复后，用同一路径重试 workspace_read_file。` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `申请授权失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );

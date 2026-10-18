@@ -15,6 +15,7 @@ import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
+import { decideRequest } from './perm-store.js';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
@@ -64,8 +65,7 @@ const FILES_INBOX = path.join(FILES_ROOT, 'inbox');
 // 文件收发功能的构建标记：每次改这块逻辑就改一下，启动日志里能确认加载的是哪一版。
 const FILE_FEATURE_BUILD = 'file-2026-10-18-c';
 
-/** 文件收发的独立调试日志（绕开 log() 的脱敏，便于排查）。失败不影响主流程。 */
-function fileDebug(msg) {
+/** 文件收发的独立调试日志（绕开 log() 的脱敏，便于排查）。失败不影响主流程。 */function fileDebug(msg) {
   try {
     fs.appendFileSync(path.join(STATE_DIR, 'file-debug.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8');
   } catch {}
@@ -75,6 +75,24 @@ function fileDebug(msg) {
 // 这里保存一份引用，供 saveIncomingFile 这类模块级函数读取 snowluma 端点。
 // 约定：只在 main() 里赋值一次；cfg 对象本身是活引用，后续字段变化能读到。
 let RUNTIME_CFG = null;
+
+/** 直接发一条纯文本（不经过 agent）。用于授权结果这类系统回执。 */
+async function sendSimpleText(kind, id, text) {
+  const sl = RUNTIME_CFG?.snowluma ?? {};
+  const base = String(sl.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+  const seg = [{ type: 'text', data: { text: String(text ?? '') } }];
+  const params = kind === 'private' ? { user_id: Number(id), message: seg } : { group_id: Number(id), message: seg };
+  const res = await fetch(`${base}/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(sl.accessToken ? { authorization: `Bearer ${sl.accessToken}` } : {}) },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(15000)
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body?.status !== 'ok') throw new Error(body?.wording || `HTTP ${res.status}`);
+  return body?.data ?? null;
+}
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
@@ -10029,6 +10047,26 @@ async function main() {
     if (!isSessionAllowedInCurrentMode(key)) return;
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+
+    // 敏感文件读取授权：管理员私聊回复「同意 AB12」/「拒绝 AB12」即生效，
+    // 这是系统回执，不进 agent 上下文（避免污染聊天、也避免被群友伪造）。
+    if (isOwner && kind === 'private') {
+      const grant = plainContent.trim().match(/^(同意|通过|拒绝|approve|deny|yes|no)\s*[#：:]?\s*([A-Za-z0-9]{4})$/);
+      if (grant) {
+        const approved = /^(同意|通过|approve|yes)$/i.test(grant[1]);
+        const rec = decideRequest(grant[2], approved);
+        log(`[perm] ${approved ? '同意' : '拒绝'}授权 ${grant[2]} -> ${rec ? rec.path : '（无匹配的待批申请）'}`);
+        try {
+          await sendSimpleText(kind, id, rec
+            ? `授权 ${rec.code} 已${approved ? '通过' : '拒绝'}：${rec.path}`
+            : `没有找到待批准的授权码 ${grant[2]}（可能已过期，10 分钟有效）`);
+        } catch (error) {
+          log('[perm] 回执发送失败:', error?.message ?? error);
+        }
+        return;
+      }
+    }
+
     const roleState = readRoleState();
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
