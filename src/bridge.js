@@ -1253,8 +1253,15 @@ async function segmentsToText(segments, options = {}) {
         const saved = await saveIncomingFile(d).catch(() => null);
         const fname = d?.name ?? d?.file_name ?? d?.file ?? '';
         if (!saved) {
-          // 只记字段名，不记值：文件名/URL 里可能带可访问链接
-          log(`[file] 未能保存文件「${fname}」（消息段字段: ${Object.keys(d).join(',') || '无'}）`);
+          // 诊断用：只透露前缀/长度/是否存在，不打印完整 URL（可能带可访问链接）
+          const brief = (v) => {
+            const s = String(v ?? '');
+            return s ? `${s.slice(0, 10)}…(len=${s.length})` : '(空)';
+          };
+          const exists = (v) => {
+            try { const s = String(v ?? ''); return s && fs.existsSync(s) ? 'yes' : 'no'; } catch { return 'err'; }
+          };
+          log(`[file] 未能保存「${fname}」 url=${brief(d?.url)} url存在=${exists(d?.url)} file=${brief(d?.file)} file存在=${exists(d?.file)} file_id=${brief(d?.file_id)}`);
         }
         out.push(saved ? `[文件${fname}（已保存到 ${saved}）]` : `[文件${fname}]`);
         break;
@@ -11063,6 +11070,8 @@ async function main() {
     log(`SnowLuma 首次连接未成功（将在后台自动重连并尝试自愈 WS token）: ${error?.message ?? error}`);
   });
   log('桥接已启动。按 Ctrl+C 退出。');
+  // 启动标记：确认「文件收发」这段代码确实被加载了（排查"改了没生效"时一眼可见）
+  log(`[file] 文件收发已启用：收件目录 ${FILES_INBOX}`);
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
   if (cfg.socialV2?.sticker?.enabled !== false) {
     syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
