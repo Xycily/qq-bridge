@@ -1407,7 +1407,7 @@ server.tool(
   'qq_send_file',
   '把 qq-files/ 下的文件作为 QQ 文件发出去。key 用当前会话的 private:QQ号 或 group:群号；目标必须在白名单内。',
   {
-    key: z.string().describe('会话 key，例如 private:2413790995 或 group:123456'),
+    key: z.string().describe('会话 key，例如 private:10001 或 group:123456'),
     path: z.string().describe('要发送的文件路径（必须位于 qq-files/ 下）'),
     name: z.string().optional().describe('对方看到的文件名，默认用原文件名')
   },
@@ -1450,7 +1450,10 @@ function findPython() {
   const candidates = [
     process.env.QQ_OFFICE_PYTHON,
     process.env.DSH_PYTHON,
-    'C:\\Users\\Administrator\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe',
+    // DSH 自带的 Python（若 DSH_HOME 存在则优先于系统 python）
+    process.env.DSH_HOME
+      ? path.join(process.env.DSH_HOME, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe')
+      : null,
   ].filter(Boolean);
   for (const c of candidates) {
     try { if (fs.existsSync(c)) return c; } catch {}

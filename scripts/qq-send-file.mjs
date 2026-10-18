@@ -2,20 +2,27 @@
 // qq-send-file.mjs —— 通过 OneBot 把本地文件发到 QQ（私聊或群）。
 //
 // 用法：
-//   node scripts/qq-send-file.mjs --to private:2413790995 --file "qq-files/outbox/a.docx"
+//   node scripts/qq-send-file.mjs --to private:10001 --file "qq-files/outbox/a.docx"
 //   node scripts/qq-send-file.mjs --to group:123456 --file "D:\x.pdf" --name 报告.pdf
 //
 // 说明：
-// - 只允许发送「工作区」内的文件（默认 C:\Users\Administrator\Documents\deepseek-harness\default-workspace），
-//   防止被诱导把系统文件发出去。要放宽改 WORKSPACE 或传 --allow-outside（仍会二次确认）。
+// - 只允许发送「工作区」内的文件（工作区 = 本仓库的上一级目录，可用环境变量
+//   QQ_FILES_WORKSPACE 覆盖），防止被诱导把系统文件发出去。确实要发外部文件时
+//   加 --allow-outside。
 // - 发送用 OneBot 的 send_private_msg / send_group_msg，消息段 type=file，
 //   这是 SnowLuma 支持的扩展段（实测可用：日志 highway upload done）。
 // - 配置取自 qq-bridge/config.json 的 snowluma.httpUrl / accessToken，无需额外填写。
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const WORKSPACE = 'C:\\Users\\Administrator\\Documents\\deepseek-harness\\default-workspace';
-const CONFIG = path.join(WORKSPACE, 'qq-bridge', 'config.json');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
+// 工作区默认是仓库的上一级目录（qq-files/ 就在那里），可用环境变量覆盖。
+const WORKSPACE = process.env.QQ_FILES_WORKSPACE
+  ? path.resolve(process.env.QQ_FILES_WORKSPACE)
+  : path.resolve(REPO_ROOT, '..');
+const CONFIG = path.join(REPO_ROOT, 'config.json');
 
 function usage(code = 1) {
   console.error('用法: node scripts/qq-send-file.mjs --to <private:QQ|group:群号> --file <路径> [--name <显示名>]');

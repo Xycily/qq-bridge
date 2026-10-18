@@ -335,6 +335,22 @@ SnowLuma 同一个账号的 **HTTP token（默认 3000 端口）与 WebSocket to
 
 关掉后**只自愈 token**（换账号仍能恢复），绝不动 URL、也不写回 URL。
 
+## 文件收发与 Office 文档（本仓库新增）
+
+上游默认只把收到的文件显示成 `[文件 xxx]` 占位符。本仓库新增了一整套文件能力：
+
+- **收**：QQ 发来的文件自动落盘到 `<工作区>/qq-files/inbox/`，上下文里给出绝对路径
+- **读**：`workspace_read_file`（文本）、`doc_read`（docx/xlsx/pptx/pdf）
+- **写**：`workspace_write_file`、`doc_edit`（docx replace/append、xlsx set/append_row）、`doc_create`（新建 docx/xlsx）
+- **发**：`qq_send_file` 工具，或命令行 `node scripts/qq-send-file.mjs`
+- **敏感文件授权**：`config.json`、`.env*`、`*token*` 等需管理员在 QQ 回复「同意 <授权码>」后才可读
+
+边界：**读**覆盖整个工作区（敏感文件需授权），**写/新建/发送**都限制在 `qq-files/` 下，
+避免一句「把 config.json 改一下」就改掉机器人配置。
+
+完整说明（目录约定、工具参数、格式支持矩阵、授权流程、已知限制）见
+**[docs/guides/FILE_TRANSFER.md](docs/guides/FILE_TRANSFER.md)**。
+
 ## 已知限制
 
 - agent 回复在回合结束时一次性发送（不做流式逐字转发）；回复超过 `socialV2.send.maxMessageChars`（默认 500 字，可用 `social.maxReplyChars` 调整）自动按句读/URL 边界分段
