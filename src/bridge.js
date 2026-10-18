@@ -70,6 +70,11 @@ function fileDebug(msg) {
     fs.appendFileSync(path.join(STATE_DIR, 'file-debug.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8');
   } catch {}
 }
+
+// main() 里的 `const cfg = loadConfig()` 是**局部变量**，模块级函数拿不到。
+// 这里保存一份引用，供 saveIncomingFile 这类模块级函数读取 snowluma 端点。
+// 约定：只在 main() 里赋值一次；cfg 对象本身是活引用，后续字段变化能读到。
+let RUNTIME_CFG = null;
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
@@ -1187,8 +1192,9 @@ async function saveIncomingFile(d, chatKey = '') {
   try { fs.mkdirSync(FILES_INBOX, { recursive: true }); } catch {}
   const write = (buf) => { fs.writeFileSync(dest, buf); return dest; };
 
-  const httpBase = String(cfg?.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-  const authHeader = cfg?.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {};
+  const sl = RUNTIME_CFG?.snowluma ?? {};
+  const httpBase = String(sl.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const authHeader = sl.accessToken ? { authorization: `Bearer ${sl.accessToken}` } : {};
   const post = async (action, params) => {
     try {
       const r = await fetch(`${httpBase}/${action}`, {
@@ -1415,6 +1421,7 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  RUNTIME_CFG = cfg;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
