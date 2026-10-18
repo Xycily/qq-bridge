@@ -1170,7 +1170,7 @@ function withTimeout(promise, ms, label) {
  *
  * 各 OneBot 实现对文件段给的字段不一致，按 url → file_id(调 get_file) → 本地路径 依次尝试。
  */
-async function saveIncomingFile(d) {
+async function saveIncomingFile(d, chatKey = '') {
   const rawName = String(d?.name ?? d?.file_name ?? d?.file ?? 'file');
   const baseName = path.basename(rawName).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'file';
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -1180,18 +1180,61 @@ async function saveIncomingFile(d) {
 
   const httpBase = String(cfg?.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
   const authHeader = cfg?.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {};
-
-  // 1) 段里直接带 http(s) url
-  const segUrl = String(d?.url ?? '');
-  if (/^https?:\/\//i.test(segUrl)) {
+  const post = async (action, params) => {
     try {
-      const r = await fetch(segUrl, { signal: AbortSignal.timeout(30000) });
-      if (r.ok) return write(Buffer.from(await r.arrayBuffer()));
+      const r = await fetch(`${httpBase}/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...authHeader },
+        body: JSON.stringify(params),
+        signal: AbortSignal.timeout(30000)
+      });
+      const body = await r.json().catch(() => ({}));
+      const ok = body?.status === 'ok' && body?.retcode === 0;
+      return { ok, data: body?.data ?? null, wording: body?.wording ?? '', retcode: body?.retcode, httpStatus: r.status };
+    } catch (error) {
+      return { ok: false, data: null, wording: error?.message ?? String(error), retcode: null, httpStatus: 0 };
+    }
+  };
+  const saveFromUrl = async (url, timeout = 60000) => {
+    if (!/^https?:\/\//i.test(String(url ?? ''))) return null;
+    try {
+      const r = await fetch(String(url), { signal: AbortSignal.timeout(timeout) });
+      if (!r.ok) return null;
+      return write(Buffer.from(await r.arrayBuffer()));
+    } catch {
+      return null;
+    }
+  };
+
+  const fileId = String(d?.file_id ?? d?.id ?? d?.file ?? '');
+
+  // 0) 正规路径：群/私聊文件必须用 get_group_file_url / get_private_file_url 换下载地址。
+  //    （SnowLuma 明确说过：get_file 只解析图片/语音缓存，普通文件要用这两个动作）
+  const [kind, id] = String(chatKey).split(':');
+  if (fileId && (kind === 'private' || kind === 'group')) {
+    try {
+      const params = kind === 'private'
+        ? { user_id: Number(id), file_id: fileId }
+        : { group_id: Number(id), file_id: fileId };
+      const action = kind === 'private' ? 'get_private_file_url' : 'get_group_file_url';
+      const res = await post(action, params);
+      if (!res.ok) log(`[file] ${action} 未成功: ${res.wording || res.retcode || res.httpStatus}`);
+      const url = String(res.data?.url ?? res.data?.file ?? '');
+      const saved = await saveFromUrl(url);
+      if (saved) return saved;
+      if (res.ok) log(`[file] ${action} 返回了地址但下载失败`);
     } catch {}
   }
 
+  // 1) 段里直接带可下载的 http(s) url
+  const segUrl = String(d?.url ?? '');
+  if (/^https?:\/\//i.test(segUrl)) {
+    const saved = await saveFromUrl(segUrl, 30000);
+    if (saved) return saved;
+  }
+
   // 1.5) url / file 本身就是本地绝对路径。
-  // SnowLuma 回显「自己发过的文件」时就是这种形态：file_id 为空，url 指向本地原文件。
+  // SnowLuma 回显「自己发过的文件」时可能是这种形态：file_id 为空或不可解析，url 指向本地原文件。
   for (const cand of [d?.url, d?.file]) {
     const p = String(cand ?? '');
     if (!/^[a-zA-Z]:[\\/]/.test(p)) continue;
@@ -1200,32 +1243,22 @@ async function saveIncomingFile(d) {
     } catch {}
   }
 
-  // 2) 段里带 file_id / id / file，走 OneBot get_file
-  const fileId = String(d?.file_id ?? d?.id ?? d?.file ?? '');
+  // 2) 退路：当成图片/语音缓存的 file_id 走 get_file
   if (fileId) {
     try {
-      const res = await fetch(`${httpBase}/get_file`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...authHeader },
-        body: JSON.stringify({ file_id: fileId }),
-        signal: AbortSignal.timeout(60000)
-      });
-      const body = await res.json().catch(() => ({}));
-      const data = body?.data ?? {};
-      if (data.base64) return write(Buffer.from(String(data.base64), 'base64'));
-      const localPath = String(data.file ?? '');
+      const data = await post('get_file', { file_id: fileId });
+      if (data?.base64) return write(Buffer.from(String(data.base64), 'base64'));
+      const localPath = String(data?.file ?? '');
       if (localPath && fs.existsSync(localPath)) return write(fs.readFileSync(localPath));
-      if (/^https?:\/\//i.test(String(data.url ?? ''))) {
-        const r2 = await fetch(String(data.url), { signal: AbortSignal.timeout(60000) });
-        if (r2.ok) return write(Buffer.from(await r2.arrayBuffer()));
-      }
+      const saved = await saveFromUrl(data?.url);
+      if (saved) return saved;
     } catch {}
   }
   return null;
 }
 
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
+  const { resolveAtName, resolveReply, includeReply = true, chatKey = '', saveFiles = false } = options ?? {};  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
   for (const seg of segments ?? []) {
@@ -1250,9 +1283,9 @@ async function segmentsToText(segments, options = {}) {
       case 'file': {
         // 落盘到 qq-files/inbox/ 并把路径写进上下文：模型自己没有文件工具，
         // 但只要路径可见，用户和 DSH 侧就能处理，再用 qq-send-file.mjs 发回。
-        const saved = await saveIncomingFile(d).catch(() => null);
+        const saved = saveFiles ? await saveIncomingFile(d, chatKey).catch(() => null) : null;
         const fname = d?.name ?? d?.file_name ?? d?.file ?? '';
-        if (!saved) {
+        if (saveFiles && !saved) {
           // 诊断用：只透露前缀/长度/是否存在，不打印完整 URL（可能带可访问链接）
           const brief = (v) => {
             const s = String(v ?? '');
@@ -9942,7 +9975,7 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, chatKey: `${kind}:${id}`, saveFiles: true });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
