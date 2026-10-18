@@ -57,6 +57,10 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
+// QQ 收发的文件落在工作区的 qq-files/ 下（inbox 收、outbox 发），
+// 与 state/ 分开：state 是运行状态不入库，qq-files 是用户可见的文件交换区。
+const FILES_ROOT = path.join(ROOT, '..', 'qq-files');
+const FILES_INBOX = path.join(FILES_ROOT, 'inbox');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
@@ -1158,9 +1162,60 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * 把收到的 QQ 文件段落盘到 qq-files/inbox/，返回保存后的绝对路径（失败返回 null）。
+ *
+ * 为什么要落盘：桥接的模型没有文件读取工具（安全设计），但只要文件在磁盘上，
+ * 用户/DSH 侧的 agent 就能直接处理它，再用 scripts/qq-send-file.mjs 发回去。
+ *
+ * 各 OneBot 实现对文件段给的字段不一致，按 url → file_id(调 get_file) → 本地路径 依次尝试。
+ */
+async function saveIncomingFile(d) {
+  const rawName = String(d?.name ?? d?.file_name ?? d?.file ?? 'file');
+  const baseName = path.basename(rawName).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'file';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dest = path.join(FILES_INBOX, `${stamp}-${baseName}`);
+  try { fs.mkdirSync(FILES_INBOX, { recursive: true }); } catch {}
+  const write = (buf) => { fs.writeFileSync(dest, buf); return dest; };
+
+  const httpBase = String(cfg?.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const authHeader = cfg?.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {};
+
+  // 1) 段里直接带 http(s) url
+  const segUrl = String(d?.url ?? '');
+  if (/^https?:\/\//i.test(segUrl)) {
+    try {
+      const r = await fetch(segUrl, { signal: AbortSignal.timeout(30000) });
+      if (r.ok) return write(Buffer.from(await r.arrayBuffer()));
+    } catch {}
+  }
+
+  // 2) 段里带 file_id / id / file，走 OneBot get_file
+  const fileId = String(d?.file_id ?? d?.id ?? d?.file ?? '');
+  if (fileId) {
+    try {
+      const res = await fetch(`${httpBase}/get_file`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...authHeader },
+        body: JSON.stringify({ file_id: fileId }),
+        signal: AbortSignal.timeout(60000)
+      });
+      const body = await res.json().catch(() => ({}));
+      const data = body?.data ?? {};
+      if (data.base64) return write(Buffer.from(String(data.base64), 'base64'));
+      const localPath = String(data.file ?? '');
+      if (localPath && fs.existsSync(localPath)) return write(fs.readFileSync(localPath));
+      if (/^https?:\/\//i.test(String(data.url ?? ''))) {
+        const r2 = await fetch(String(data.url), { signal: AbortSignal.timeout(60000) });
+        if (r2.ok) return write(Buffer.from(await r2.arrayBuffer()));
+      }
+    } catch {}
+  }
+  return null;
+}
+
 async function segmentsToText(segments, options = {}) {
-  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
-  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
+  const { resolveAtName, resolveReply, includeReply = true } = options ?? {};  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
   if (typeof segments === 'string') return segments.trim();
   const out = [];
   for (const seg of segments ?? []) {
@@ -1182,7 +1237,14 @@ async function segmentsToText(segments, options = {}) {
       case 'image': out.push('[图片]'); break;
       case 'record': out.push('[语音]'); break;
       case 'video': out.push('[视频]'); break;
-      case 'file': out.push(`[文件${d.name ?? ''}]`); break;
+      case 'file': {
+        // 落盘到 qq-files/inbox/ 并把路径写进上下文：模型自己没有文件工具，
+        // 但只要路径可见，用户和 DSH 侧就能处理，再用 qq-send-file.mjs 发回。
+        const saved = await saveIncomingFile(d).catch(() => null);
+        const fname = d?.name ?? d?.file_name ?? d?.file ?? '';
+        out.push(saved ? `[文件${fname}（已保存到 ${saved}）]` : `[文件${fname}]`);
+        break;
+      }
       case 'reply': {
         // 引用/回复段：默认解析成「被引用人 + 原文」，让 AI 能判断这句话是对谁说的；
         // includeReply=false 时跳过该段，得到“当前消息自己的文字”（用于指令/指向性判断）。
