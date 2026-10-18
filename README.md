@@ -2,6 +2,11 @@
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
+> 📦 **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的修改版**（MIT）。
+> 相对上游的主要新增：**QQ 文件收发 + Office 文档读写 + 敏感文件授权**，
+> 详见 [docs/guides/FILE_TRANSFER.md](docs/guides/FILE_TRANSFER.md)。
+> 上游版权与许可见 [LICENSE](LICENSE)。
+
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。
 >
 > 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
