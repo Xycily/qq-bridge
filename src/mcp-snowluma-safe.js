@@ -1356,4 +1356,87 @@ server.tool(
   }
 );
 
+// 可写/可发送的文件范围：只允许工作区下的 qq-files/（inbox 收、outbox 发、work 中转）。
+// 刻意不放宽到整个工作区：一句「把 config.json 发给我」就能把令牌发进聊天。
+const QQ_FILES_ROOT = path.resolve(ROOT, '..', 'qq-files');
+const WRITE_LIMIT_BYTES = 200 * 1024;
+const SEND_LIMIT_BYTES = 20 * 1024 * 1024;
+
+function resolveInQqFiles(p, { mustExist = false } = {}) {
+  const raw = String(p ?? '').trim();
+  if (!raw) throw new Error('路径为空');
+  const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(QQ_FILES_ROOT, raw);
+  const rel = path.relative(QQ_FILES_ROOT, abs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`拒绝：只允许 qq-files/ 下的路径（${abs}）。收件在 qq-files/inbox/，产出请写 qq-files/outbox/`);
+  }
+  if (mustExist) {
+    const st = fs.statSync(abs);
+    if (!st.isFile()) throw new Error(`不是普通文件：${abs}`);
+  }
+  return abs;
+}
+
+server.tool(
+  'workspace_write_file',
+  '在 qq-files/ 下写一个文本文件（默认写 qq-files/outbox/）。写完可用 qq_send_file 发到 QQ。最大 200KB。',
+  {
+    path: z.string().describe('文件路径（相对或绝对，必须位于工作区 qq-files/ 下）'),
+    content: z.string().describe('文件内容（UTF-8 文本）'),
+    overwrite: z.boolean().optional().describe('已存在时是否覆盖，默认 false')
+  },
+  async ({ path: p, content, overwrite }) => {
+    try {
+      const abs = resolveInQqFiles(p);
+      const buf = Buffer.from(String(content ?? ''), 'utf8');
+      if (buf.length > WRITE_LIMIT_BYTES) throw new Error(`内容过大（${buf.length} 字节，上限 ${WRITE_LIMIT_BYTES}）`);
+      if (fs.existsSync(abs) && overwrite !== true) {
+        throw new Error(`文件已存在：${abs}（确认要覆盖请传 overwrite: true）`);
+      }
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buf);
+      return { content: [{ type: 'text', text: `已写入 ${abs}（${buf.length} 字节）` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `写入失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_send_file',
+  '把 qq-files/ 下的文件作为 QQ 文件发出去。key 用当前会话的 private:QQ号 或 group:群号；目标必须在白名单内。',
+  {
+    key: z.string().describe('会话 key，例如 private:2413790995 或 group:123456'),
+    path: z.string().describe('要发送的文件路径（必须位于 qq-files/ 下）'),
+    name: z.string().optional().describe('对方看到的文件名，默认用原文件名')
+  },
+  async ({ key, path: p, name }) => {
+    try {
+      const m = String(key ?? '').match(/^(private|group)[:：](.+)$/);
+      if (!m) throw new Error('key 格式应为 private:QQ号 或 group:群号');
+      const kind = m[1];
+      const id = String(m[2]);
+      const a = getAccess();
+      const allowed = kind === 'private'
+        ? isAllowed(a.allowPrivate, a.denyPrivate, id, a.allowAllWhenEmpty)
+        : isAllowed(a.allowGroups, a.denyGroups, id, a.allowAllWhenEmpty);
+      if (!allowed) throw new Error(`拒绝：${key} 不在白名单里`);
+
+      const abs = resolveInQqFiles(p, { mustExist: true });
+      const st = fs.statSync(abs);
+      if (st.size > SEND_LIMIT_BYTES) throw new Error(`文件过大（${st.size} 字节，上限 ${SEND_LIMIT_BYTES}）`);
+
+      const displayName = String(name ?? '').trim() || path.basename(abs);
+      const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+      const params = kind === 'private'
+        ? { user_id: Number(id), message: [{ type: 'file', data: { file: abs, name: displayName } }] }
+        : { group_id: Number(id), message: [{ type: 'file', data: { file: abs, name: displayName } }] };
+      const data = await onebot(action, params);
+      return { content: [{ type: 'text', text: `已发送 ${displayName}（${st.size} 字节）到 ${key}，message_id=${data?.message_id ?? '(无)'}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `发送文件失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
 await server.connect(new StdioServerTransport());
