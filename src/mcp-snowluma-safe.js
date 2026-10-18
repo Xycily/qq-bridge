@@ -1458,13 +1458,14 @@ function findPython() {
   return 'python';
 }
 
-function runOffice(args, timeoutMs = 60000) {
+function runOffice(args, timeoutMs = 60000, input = null) {
   const py = findPython();
   const r = spawnSync(py, [OFFICE_SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: timeoutMs,
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     windowsHide: true,
+    ...(input != null ? { input } : {}),
   });
   if (r.error) throw new Error(`调用 Python 失败：${r.error.message}（可用 QQ_OFFICE_PYTHON 指定解释器）`);
   const out = String(r.stdout ?? '').trim();
@@ -1515,6 +1516,29 @@ server.tool(
       return { content: [{ type: 'text', text: `已修改 ${abs}（${res.kind}，应用 ${res.applied} 处）。可用 doc_read 复查，或 qq_send_file 发回。` }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `修改失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'doc_create',
+  '新建文档并写入内容：.docx（# 标题 / ## 小标题 / - 列表 / 其余正文）、.xlsx（每行一行数据，制表符或逗号分列）、.txt/.md/.csv。常用于把 PDF 文本转成 docx 发回。',
+  {
+    path: z.string().describe('输出路径（必须位于 qq-files/ 下，例如 qq-files/outbox/报告.docx）'),
+    content: z.string().describe('文档内容（纯文本，按行解析）'),
+    overwrite: z.boolean().optional().describe('已存在时是否覆盖，默认 false')
+  },
+  async ({ path: p, content, overwrite }) => {
+    try {
+      const abs = resolveInQqFiles(p);
+      if (fs.existsSync(abs) && overwrite !== true) {
+        throw new Error(`文件已存在：${abs}（确认覆盖请传 overwrite: true）`);
+      }
+      const res = runOffice(['create', abs], 120000, String(content ?? ''));
+      if (!res.ok) return { content: [{ type: 'text', text: `生成失败：${res.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `已生成 ${abs}（${res.kind}）。可用 qq_send_file 发回 QQ。` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `生成失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );

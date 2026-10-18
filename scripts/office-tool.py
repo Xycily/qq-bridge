@@ -246,12 +246,94 @@ def read_pdf(path, max_chars):
 
 
 # ── 入口 ────────────────────────────────────────────────────────────────────
+# ── 新建文档（内容从 stdin 读，避免命令行长度限制）──────────────────────
+def _read_stdin_text():
+    data = sys.stdin.buffer.read()
+    for enc in ("utf-8", "utf-8-sig", "gb18030"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", "ignore")
+
+
+def create_docx(path, text):
+    """按行生成 docx：# 标题 / ## 小标题 / 其它为正文 / 空行分段。"""
+    import docx
+
+    d = docx.Document()
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith("## "):
+            d.add_heading(line[3:].strip(), level=2)
+        elif line.startswith("# "):
+            d.add_heading(line[2:].strip(), level=1)
+        elif line.startswith("- "):
+            d.add_paragraph(line[2:].strip(), style="List Bullet")
+        else:
+            d.add_paragraph(line)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    d.save(path)
+    return {"ok": True, "kind": "docx", "path": path, "paragraphs": len(d.paragraphs)}
+
+
+def create_xlsx(path, text):
+    """按行生成 xlsx：制表符优先，其次逗号；第一行当表头加粗。"""
+    import openpyxl
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    rows = 0
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        cells = raw.split("\t") if "\t" in raw else [c.strip() for c in raw.split(",")]
+        ws.append([_coerce(v) for v in cells])
+        rows += 1
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    wb.save(path)
+    return {"ok": True, "kind": "xlsx", "path": path, "rows": rows}
+
+
+def _coerce(v):
+    s = str(v)
+    try:
+        if re.fullmatch(r"-?\d+", s):
+            return int(s)
+        if re.fullmatch(r"-?\d+\.\d+", s):
+            return float(s)
+    except Exception:
+        pass
+    return s
+
+
+def create_file(path, text):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".docx":
+        return create_docx(path, text)
+    if ext == ".xlsx":
+        return create_xlsx(path, text)
+    if ext in (".txt", ".md", ".csv", ".json"):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return {"ok": True, "kind": "text", "path": path, "bytes": len(text.encode("utf-8"))}
+    return {"ok": False, "error": f"不支持新建 {ext}；支持 .docx / .xlsx / .txt / .md / .csv"}
+
+
 def main():
     if len(sys.argv) < 3:
         fail("用法: office-tool.py read <path> [max_chars] | edit <path> <ops_json>")
     cmd = sys.argv[1].lower()
     path = sys.argv[2]
-    if not os.path.isfile(path):
+    # create 用于新建文件，其余命令要求目标已存在
+    if cmd != "create" and not os.path.isfile(path):
         fail(f"文件不存在: {path}")
     ext = os.path.splitext(path)[1].lower()
 
@@ -297,6 +379,13 @@ def main():
                     f.write(str(op.get("content") or ""))
                 return emit({"ok": True, "kind": "text", "applied": 1})
         return fail("文本文件只支持 {op: overwrite, content: ...}")
+
+    if cmd == "create":
+        # python office-tool.py create <out_path>  （内容从 stdin 读）
+        text = _read_stdin_text()
+        if not text.strip():
+            return fail("stdin 里没有内容")
+        return emit(create_file(path, text))
 
     fail(f"未知命令: {cmd}")
 
