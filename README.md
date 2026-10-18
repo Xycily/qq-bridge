@@ -7,6 +7,18 @@
 > 详见 [docs/guides/FILE_TRANSFER.md](docs/guides/FILE_TRANSFER.md)。
 > 上游版权与许可见 [LICENSE](LICENSE)。
 
+> ⚠️ **免责声明**
+>
+> - 本仓库是**非官方分支**，与上游作者、DeepSeek（深度求索）及腾讯 / QQ **均无隶属或关联**，
+>   未获其背书或授权。
+> - 代码按 MIT 协议分发（见 [LICENSE](LICENSE)）；上游内置的第三方角色图（`deepseek娘.png`）
+>   **已从本仓库移除**，现使用仓库自绘的占位图 `assets/ai-self.png`，如需自定义形象请自行替换。
+> - 本项目不含 SnowLuma 本体。SnowLuma 是独立第三方项目，采用**源码可见非商业许可**
+>   （非 OSI 开源），使用前须自行阅读并遵守其 EULA 与《QQ 用户协议》；
+>   请勿将 SnowLuma 的二进制或源码并入本仓库分发。
+> - 使用第三方客户端登录 QQ、运行机器人可能违反《QQ 用户协议》，风险（包括封号）由使用者自负。
+> - 软件按“现状”提供，不附带任何担保；因使用本软件造成的任何损失，作者不承担责任。
+
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。
 >
 > 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
