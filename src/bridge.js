@@ -1323,7 +1323,7 @@ async function segmentsToText(segments, options = {}) {
           };
           log(`[file] 未能保存「${fname}」 url=${brief(d?.url)} url存在=${exists(d?.url)} file=${brief(d?.file)} file存在=${exists(d?.file)} file_id=${brief(d?.file_id)}`);
         }
-        out.push(saved ? `[文件${fname}（已保存到 ${saved}）]` : `[文件${fname}]`);
+        out.push(saved ? `[文件${fname}（已保存到 ${saved}；需要看内容可用 workspace_read_file 读取）]` : `[文件${fname}]`);
         break;
       }
       case 'reply': {

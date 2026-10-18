@@ -1246,4 +1246,74 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   );
 }
 
+// ── 工作区文件只读工具 ─────────────────────────────────────────────────────
+// 用途：QQ 端收到的文件由桥接落到 <工作区>\qq-files\inbox\，而 QQ 会话被剥掉了通用
+// read/write 工具（见 qq-tool-restrict.mjs）。这里给一个**只读、限定工作区**的入口：
+// 能回答"这个文件里写了什么"，但仍然写不了、也读不到工作区之外。
+const WORKSPACE_ROOT = path.resolve(ROOT, '..');
+const READ_LIMIT_BYTES = 200 * 1024;
+
+function resolveInWorkspace(p) {
+  const raw = String(p ?? '').trim();
+  if (!raw) throw new Error('路径为空');
+  const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(WORKSPACE_ROOT, raw);
+  const rel = path.relative(WORKSPACE_ROOT, abs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`拒绝：路径不在工作区内（${abs}）`);
+  }
+  return abs;
+}
+
+server.tool(
+  'workspace_read_file',
+  '读取工作区内的文本文件（只读）。QQ 收到的文件一般保存在 qq-files/inbox/ 下。最大 200KB，二进制文件会被拒绝。',
+  {
+    path: z.string().describe('文件路径：绝对路径，或相对工作区根目录的路径'),
+    maxChars: z.number().optional().describe('最多返回多少字符（默认 20000，超出截断并提示）')
+  },
+  async ({ path: p, maxChars }) => {
+    try {
+      const abs = resolveInWorkspace(p);
+      const st = fs.statSync(abs);
+      if (!st.isFile()) throw new Error(`不是普通文件：${abs}`);
+      if (st.size > READ_LIMIT_BYTES) throw new Error(`文件过大（${st.size} 字节，上限 ${READ_LIMIT_BYTES}）`);
+      const buf = fs.readFileSync(abs);
+      if (buf.includes(0)) throw new Error('看起来是二进制文件，未读取');
+      let text = buf.toString('utf8');
+      const limit = Math.max(1000, Math.min(200000, Number(maxChars) || 20000));
+      let truncated = false;
+      if (text.length > limit) {
+        text = text.slice(0, limit);
+        truncated = true;
+      }
+      const head = `文件: ${abs}\n大小: ${st.size} 字节${truncated ? `（已截断到 ${limit} 字符）` : ''}\n---\n`;
+      return { content: [{ type: 'text', text: head + text }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'workspace_list_dir',
+  '列出工作区内某个目录的文件（只读）。默认列出 qq-files/inbox。',
+  { path: z.string().optional().describe('目录路径，默认 qq-files/inbox') },
+  async ({ path: p }) => {
+    try {
+      const abs = resolveInWorkspace(p || 'qq-files/inbox');
+      const entries = fs.readdirSync(abs, { withFileTypes: true })
+        .slice(0, 200)
+        .map((e) => {
+          const full = path.join(abs, e.name);
+          let size = 0;
+          try { size = e.isFile() ? fs.statSync(full).size : 0; } catch {}
+          return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', size };
+        });
+      return { content: [{ type: 'text', text: `目录: ${abs}\n` + serializeModelData(entries) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `列目录失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
 await server.connect(new StdioServerTransport());
