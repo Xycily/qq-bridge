@@ -63,6 +63,13 @@ const FILES_ROOT = path.join(ROOT, '..', 'qq-files');
 const FILES_INBOX = path.join(FILES_ROOT, 'inbox');
 // 文件收发功能的构建标记：每次改这块逻辑就改一下，启动日志里能确认加载的是哪一版。
 const FILE_FEATURE_BUILD = 'file-2026-10-18-c';
+
+/** 文件收发的独立调试日志（绕开 log() 的脱敏，便于排查）。失败不影响主流程。 */
+function fileDebug(msg) {
+  try {
+    fs.appendFileSync(path.join(STATE_DIR, 'file-debug.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8');
+  } catch {}
+}
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
@@ -1222,10 +1229,12 @@ async function saveIncomingFile(d, chatKey = '') {
         : { group_id: Number(id), file_id: fileId };
       const action = kind === 'private' ? 'get_private_file_url' : 'get_group_file_url';
       const res = await post(action, params);
+      fileDebug(`branch0 ${action} ok=${res.ok} retcode=${res.retcode} wording=${res.wording || ''} hasUrl=${Boolean(res.data?.url)}`);
       if (!res.ok) log(`[file] ${action} 未成功: ${res.wording || res.retcode || res.httpStatus}`);
       const url = String(res.data?.url ?? res.data?.file ?? '');
       const saved = await saveFromUrl(url);
       if (saved) return saved;
+      fileDebug(`branch0 下载结果 saved=${saved ? 'yes' : 'no'} urlHost=${url ? url.slice(0, 40) : '(空)'}`);
       if (res.ok) log(`[file] ${action} 返回了地址但下载失败`);
     } catch {}
   }
@@ -1287,7 +1296,15 @@ async function segmentsToText(segments, options = {}) {
       case 'file': {
         // 落盘到 qq-files/inbox/ 并把路径写进上下文：模型自己没有文件工具，
         // 但只要路径可见，用户和 DSH 侧就能处理，再用 qq-send-file.mjs 发回。
-        const saved = saveFiles ? await saveIncomingFile(d, chatKey).catch(() => null) : null;
+        // 独立调试文件（绕开 log() 的脱敏/截断），排查"到底进没进这段"时用。
+        try {
+          fs.appendFileSync(path.join(STATE_DIR, 'file-debug.log'),
+            `${new Date().toISOString()} enter chatKey=${JSON.stringify(chatKey)} saveFiles=${saveFiles} keys=${Object.keys(d ?? {}).join(',')} fileIdLen=${String(d?.file_id ?? '').length}\n`, 'utf8');
+        } catch {}
+        const saved = saveFiles ? await saveIncomingFile(d, chatKey).catch((e) => {
+          try { fs.appendFileSync(path.join(STATE_DIR, 'file-debug.log'), `${new Date().toISOString()} saveIncomingFile threw: ${e?.message ?? e}\n`, 'utf8'); } catch {}
+          return null;
+        }) : null;
         const fname = d?.name ?? d?.file_name ?? d?.file ?? '';
         if (saveFiles && !saved) {
           // 诊断用：只透露前缀/长度/是否存在，不打印完整 URL（可能带可访问链接）
