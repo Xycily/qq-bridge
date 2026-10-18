@@ -61,6 +61,8 @@ const STATE_DIR = path.join(ROOT, 'state');
 // 与 state/ 分开：state 是运行状态不入库，qq-files 是用户可见的文件交换区。
 const FILES_ROOT = path.join(ROOT, '..', 'qq-files');
 const FILES_INBOX = path.join(FILES_ROOT, 'inbox');
+// 文件收发功能的构建标记：每次改这块逻辑就改一下，启动日志里能确认加载的是哪一版。
+const FILE_FEATURE_BUILD = 'file-2026-10-18-c';
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
@@ -1207,6 +1209,8 @@ async function saveIncomingFile(d, chatKey = '') {
   };
 
   const fileId = String(d?.file_id ?? d?.id ?? d?.file ?? '');
+  // 诊断：一眼看出这次到底走没走到"按会话换下载地址"那条路径
+  log(`[file] 收件 chatKey=${chatKey || '(空)'} file_id=${fileId ? `len=${fileId.length}` : '(空)'}`);
 
   // 0) 正规路径：群/私聊文件必须用 get_group_file_url / get_private_file_url 换下载地址。
   //    （SnowLuma 明确说过：get_file 只解析图片/语音缓存，普通文件要用这两个动作）
@@ -11104,7 +11108,7 @@ async function main() {
   });
   log('桥接已启动。按 Ctrl+C 退出。');
   // 启动标记：确认「文件收发」这段代码确实被加载了（排查"改了没生效"时一眼可见）
-  log(`[file] 文件收发已启用：收件目录 ${FILES_INBOX}`);
+  log(`[file] 文件收发已启用（build ${FILE_FEATURE_BUILD}）：收件目录 ${FILES_INBOX}`);
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
   if (cfg.socialV2?.sticker?.enabled !== false) {
     syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
