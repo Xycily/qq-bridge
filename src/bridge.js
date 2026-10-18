@@ -1242,6 +1242,10 @@ async function segmentsToText(segments, options = {}) {
         // 但只要路径可见，用户和 DSH 侧就能处理，再用 qq-send-file.mjs 发回。
         const saved = await saveIncomingFile(d).catch(() => null);
         const fname = d?.name ?? d?.file_name ?? d?.file ?? '';
+        if (!saved) {
+          // 只记字段名，不记值：文件名/URL 里可能带可访问链接
+          log(`[file] 未能保存文件「${fname}」（消息段字段: ${Object.keys(d).join(',') || '无'}）`);
+        }
         out.push(saved ? `[文件${fname}（已保存到 ${saved}）]` : `[文件${fname}]`);
         break;
       }
