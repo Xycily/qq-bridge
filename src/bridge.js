@@ -1190,6 +1190,16 @@ async function saveIncomingFile(d) {
     } catch {}
   }
 
+  // 1.5) url / file 本身就是本地绝对路径。
+  // SnowLuma 回显「自己发过的文件」时就是这种形态：file_id 为空，url 指向本地原文件。
+  for (const cand of [d?.url, d?.file]) {
+    const p = String(cand ?? '');
+    if (!/^[a-zA-Z]:[\\/]/.test(p)) continue;
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return write(fs.readFileSync(p));
+    } catch {}
+  }
+
   // 2) 段里带 file_id / id / file，走 OneBot get_file
   const fileId = String(d?.file_id ?? d?.id ?? d?.file ?? '');
   if (fileId) {
