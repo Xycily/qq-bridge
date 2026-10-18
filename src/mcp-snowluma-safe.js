@@ -8,6 +8,7 @@
 // - 所有调用走 OneBot HTTP API（httpUrl + accessToken）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -1435,6 +1436,85 @@ server.tool(
       return { content: [{ type: 'text', text: `已发送 ${displayName}（${st.size} 字节）到 ${key}，message_id=${data?.message_id ?? '(无)'}` }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `发送文件失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+// ── Office 文档读写（docx / xlsx / pptx / pdf）────────────────────────────
+// 实现放在 scripts/office-tool.py，用打包的 Python（python-docx / openpyxl / python-pptx）。
+// PDF 走无依赖的轻量文本抽取（扫描件抽不出来会明确报错）。
+// 读写边界：读允许工作区（敏感文件仍需授权），写只允许 qq-files/。
+const OFFICE_SCRIPT = path.join(ROOT, 'scripts', 'office-tool.py');
+
+function findPython() {
+  const candidates = [
+    process.env.QQ_OFFICE_PYTHON,
+    process.env.DSH_PYTHON,
+    'C:\\Users\\Administrator\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch {}
+  }
+  return 'python';
+}
+
+function runOffice(args, timeoutMs = 60000) {
+  const py = findPython();
+  const r = spawnSync(py, [OFFICE_SCRIPT, ...args], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    windowsHide: true,
+  });
+  if (r.error) throw new Error(`调用 Python 失败：${r.error.message}（可用 QQ_OFFICE_PYTHON 指定解释器）`);
+  const out = String(r.stdout ?? '').trim();
+  if (!out) throw new Error(`Python 无输出${r.stderr ? `：${String(r.stderr).slice(0, 300)}` : ''}`);
+  try {
+    return JSON.parse(out.split('\n').pop());
+  } catch {
+    throw new Error(`Python 输出不是 JSON：${out.slice(0, 300)}`);
+  }
+}
+
+server.tool(
+  'doc_read',
+  '读取 Office 文档内容（只读）：docx（段落+表格）、xlsx（各表单元格）、pptx（每页文本）、pdf（文本层）、以及普通文本。',
+  {
+    path: z.string().describe('文件路径（工作区内，绝对或相对）'),
+    maxChars: z.number().optional().describe('最多返回多少字符，默认 20000')
+  },
+  async ({ path: p, maxChars }) => {
+    try {
+      const abs = resolveInWorkspace(p);
+      if (isSensitivePath(abs) && !isPathApproved(abs)) {
+        return { content: [{ type: 'text', text: `该文件属于敏感文件，需要管理员授权。请先调用 request_permission(path="${abs}", reason="…")。` }], isError: true };
+      }
+      const res = runOffice(['read', abs, String(Math.max(1000, Math.min(200000, Number(maxChars) || 20000)))]);
+      if (!res.ok) return { content: [{ type: 'text', text: `读取失败：${res.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `文件: ${abs}\n类型: ${res.kind}${res.meta ? `  元信息: ${JSON.stringify(res.meta)}` : ''}${res.truncated ? '（内容已截断）' : ''}\n---\n${res.text}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'doc_edit',
+  '修改 Office 文档（只允许 qq-files/ 下的文件）：docx 支持 replace/append，xlsx 支持 set/append_row，文本支持 overwrite。',
+  {
+    path: z.string().describe('文件路径（必须位于 qq-files/ 下）'),
+    ops: z.string().describe('操作 JSON，例如 [{"op":"replace","old":"甲","new":"乙"}] 或 [{"op":"append","text":"…"}]，xlsx 用 [{"op":"set","sheet":"Sheet1","cell":"B2","value":95}]')
+  },
+  async ({ path: p, ops }) => {
+    try {
+      const abs = resolveInQqFiles(p, { mustExist: true });
+      let parsed;
+      try { parsed = JSON.parse(String(ops ?? '[]')); } catch (e) { throw new Error(`ops 不是合法 JSON：${e.message}`); }
+      const res = runOffice(['edit', abs, JSON.stringify(parsed)]);
+      if (!res.ok) return { content: [{ type: 'text', text: `修改失败：${res.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `已修改 ${abs}（${res.kind}，应用 ${res.applied} 处）。可用 doc_read 复查，或 qq_send_file 发回。` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `修改失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );
