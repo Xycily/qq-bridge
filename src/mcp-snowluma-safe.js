@@ -1481,8 +1481,51 @@ function runOffice(args, timeoutMs = 60000, input = null) {
 }
 
 server.tool(
+  'image_read',
+  '查看图片内容（jpg/png/webp/gif/bmp）：会把图片缩放后作为图像直接送进模型视觉输入。适合"这张图里是什么/写的什么"。',
+  {
+    path: z.string().describe('图片路径（工作区内，绝对或相对）'),
+    maxEdge: z.number().optional().describe('送模型前的最长边像素，默认 1024（越小越省 token）')
+  },
+  async ({ path: p, maxEdge }) => {
+    try {
+      const abs = resolveInWorkspace(p);
+      if (isSensitivePath(abs) && !isPathApproved(abs)) {
+        return { content: [{ type: 'text', text: `该文件属于敏感文件，需要管理员授权。请先调用 request_permission(path="${abs}", reason="…")。` }], isError: true };
+      }
+      const res = runOffice(['image', abs, String(Math.max(256, Math.min(2048, Number(maxEdge) || 1024)))], 60000);
+      if (!res.ok) return { content: [{ type: 'text', text: `读取图片失败：${res.error}` }], isError: true };
+      return {
+        content: [
+          { type: 'text', text: `图片: ${abs}\n原始尺寸: ${res.srcWidth}x${res.srcHeight} → 送模型: ${res.width}x${res.height}（JPEG ${Math.round(res.bytes / 1024)}KB）` },
+          { type: 'image', mimeType: res.mimeType, data: res.data }
+        ]
+      };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取图片失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'doc_convert',
+  '把旧格式（.doc/.xls/.ppt）转换成新格式（.docx/.xlsx/.pptx），返回转换后路径，可直接用 qq_send_file 发回。',
+  { path: z.string().describe('旧格式文件路径（工作区内）') },
+  async ({ path: p }) => {
+    try {
+      const abs = resolveInWorkspace(p);
+      const res = runOffice(['convert', abs], 180000);
+      if (!res.ok) return { content: [{ type: 'text', text: `转换失败：${res.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `已转换：${res.converted}\n可以用 qq_send_file 发回（若不在 qq-files/ 下，先复制过去）。` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `转换失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
   'doc_read',
-  '读取 Office 文档内容（只读）：docx（段落+表格）、xlsx（各表单元格）、pptx（每页文本）、pdf（文本层）、以及普通文本。',
+  '读取文档内容（只读）：docx/xlsx/pptx/pdf/文本；.doc/.xls/.ppt 旧格式会自动用本机 Office 转换后读取。',
   {
     path: z.string().describe('文件路径（工作区内，绝对或相对）'),
     maxChars: z.number().optional().describe('最多返回多少字符，默认 20000')

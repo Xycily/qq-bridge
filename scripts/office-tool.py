@@ -327,6 +327,84 @@ def create_file(path, text):
     return {"ok": False, "error": f"不支持新建 {ext}；支持 .docx / .xlsx / .txt / .md / .csv"}
 
 
+# ── 图片（交给多模态模型看）──────────────────────────────────────────────
+def read_image_for_model(path, max_edge=1024):
+    """把图片读成 base64，供 MCP 以 image 内容块返回给模型。
+
+    超过 max_edge 会等比缩小并重编码为 JPEG，控制 token 消耗；
+    带透明通道的 PNG 仍转 JPEG（模型不需要 alpha）。
+    """
+    try:
+        from PIL import Image
+    except Exception as e:
+        return {"ok": False, "error": f"缺少 Pillow：{e}"}
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+            im = im.convert("RGB")
+            scale = min(1.0, float(max_edge) / max(w, h))
+            if scale < 1.0:
+                im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            import io as _io
+            buf = _io.BytesIO()
+            im.save(buf, format="JPEG", quality=82, optimize=True)
+            data = buf.getvalue()
+        import base64 as _b64
+        return {
+            "ok": True,
+            "mimeType": "image/jpeg",
+            "data": _b64.b64encode(data).decode("ascii"),
+            "width": im.size[0],
+            "height": im.size[1],
+            "srcWidth": w,
+            "srcHeight": h,
+            "bytes": len(data),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"读取图片失败：{e}"}
+
+
+# ── doc/xls/ppt 旧格式转换（调 Word/Excel/PowerPoint COM）────────────────
+def _convert_with_com(path, ext, workdir):
+    """用 PowerShell + COM 把旧格式转成新格式，返回转换后的路径（失败返回 None）。"""
+    import subprocess
+
+    target_ext = {".doc": ".docx", ".xls": ".xlsx", ".ppt": ".pptx"}.get(ext)
+    if not target_ext:
+        return None
+    os.makedirs(workdir, exist_ok=True)
+    out = os.path.join(workdir, os.path.splitext(os.path.basename(path))[0] + target_ext)
+    if os.path.exists(out):
+        try:
+            os.remove(out)
+        except Exception:
+            pass
+    ps1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "convert-legacy.ps1")
+    if not os.path.isfile(ps1):
+        return None
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", ps1, "-InPath", path, "-OutPath", out],
+            capture_output=True, text=True, timeout=180,
+        )
+        if r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
+            return out
+        return None
+    except Exception:
+        return None
+
+
+def convert_legacy(path):
+    """旧格式入口：转成新格式，并回传转换后的路径。"""
+    ext = os.path.splitext(path)[1].lower()
+    workdir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(path))), "work", "_converted")
+    converted = _convert_with_com(path, ext, workdir)
+    if converted:
+        return {"ok": True, "kind": "conversion", "converted": converted, "from": path}
+    return {"ok": False, "error": f"无法转换 {ext}：本机没有可用的 Word/Excel/PowerPoint COM，或转换失败"}
+
+
 def main():
     if len(sys.argv) < 3:
         fail("用法: office-tool.py read <path> [max_chars] | edit <path> <ops_json>")
@@ -339,6 +417,13 @@ def main():
 
     if cmd == "read":
         max_chars = int(sys.argv[3]) if len(sys.argv) > 3 else 20000
+        # 旧格式（.doc/.xls/.ppt）先转成新格式再读
+        if ext in (".doc", ".xls", ".ppt"):
+            conv = _convert_with_com(path, ext, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(path))), "work", "_converted"))
+            if not conv:
+                return fail(f"无法读取 {ext}：需要本机安装 Word/Excel/PowerPoint（或 WPS）用于转换；也可以先手动另存为 {ext}x 再发")
+            path = conv
+            ext = os.path.splitext(path)[1].lower()
         if ext == ".docx":
             return emit(read_docx(path, max_chars))
         if ext in (".xlsx", ".xlsm"):
@@ -386,6 +471,14 @@ def main():
         if not text.strip():
             return fail("stdin 里没有内容")
         return emit(create_file(path, text))
+
+    if cmd == "convert":
+        return emit(convert_legacy(path))
+
+    if cmd == "image":
+        # python office-tool.py image <path> [max_edge]
+        max_edge = int(sys.argv[3]) if len(sys.argv) > 3 else 1024
+        return emit(read_image_for_model(path, max_edge))
 
     fail(f"未知命令: {cmd}")
 
